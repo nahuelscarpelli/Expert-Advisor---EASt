@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.70"
+#property version   "1.80"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -28,21 +28,21 @@ input bool     InpUseSMA200      = true;    // Usar SMA200 como filtro de tenden
 input bool     InpUseSMA500      = false;   // Usar SMA500 como filtro de tendencia
 input bool     InpRequireMAAlign = false;   // Exigir alineacion EMA8>SMA30>SMA200
 input bool     InpReqVolConfirm  = false;   // Exigir confirmacion de volumen (paso 6)
-input bool     InpDebugMode      = true;    // Imprimir por que se rechazan senales
+input bool     InpDebugMode      = false;   // Imprimir por que se rechazan senales
 
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
-input double   InpTPRatio        = 1.5;     // TP = distancia_SL * ratio (ej: 1.5 = R:R 1:1.5)
-input int      InpBreakevenPips  = 8;       // Mover SL a BE tras +N pips (0=desactivar)
+input double   InpTPRatio        = 1.5;     // TP = SL_dist * ratio  [optimizar: 1.0-2.5]
+input int      InpBreakevenPips  = 8;       // Mover SL a BE tras +N pips [optimizar: 0-15]
 input int      InpSL_Buffer      = 2;       // Buffer SL debajo/encima swing (pips)
-input int      InpMaxSL_Pips     = 20;      // SL maximo permitido en pips (0=sin limite)
+input int      InpMaxSL_Pips     = 20;      // SL maximo en pips  [optimizar: 10-30]
 
 input group "=== Filtros de Sesion ==="
 input bool     InpTradeBuys      = true;    // Operar senales de COMPRA
 input bool     InpTradeSells     = true;    // Operar senales de VENTA
-input bool     InpFilterHours    = false;   // Activar filtro de horario
-input int      InpStartHour      = 8;       // Hora inicio (servidor, incluida)
-input int      InpEndHour        = 18;      // Hora fin (servidor, excluida)
+input bool     InpFilterHours    = true;    // Activar filtro de horario (Test 2 ganador)
+input int      InpStartHour      = 8;       // Hora inicio (servidor) [optimizar: 7-10]
+input int      InpEndHour        = 18;      // Hora fin (servidor)   [optimizar: 16-21]
 
 input group "=== General ==="
 input ulong    InpMagicNumber    = 2025;    // Numero magico
@@ -91,7 +91,7 @@ int OnInit()
    g_posTicket = 0;
    g_beApplied = false;
 
-   Print("EAVolPB v1.70 | ", _Symbol, " | ", EnumToString(Period()),
+   Print("EAVolPB v1.80 | ", _Symbol, " | ", EnumToString(Period()),
          " | MaxSL=", InpMaxSL_Pips, "p | TP=1:", InpTPRatio,
          " | BE=", InpBreakevenPips, "p",
          " | Buys=", InpTradeBuys, " Sells=", InpTradeSells,
