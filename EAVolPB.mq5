@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.90"
+#property version   "1.91"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -614,8 +614,8 @@ void ManageBreakeven()
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       if(ask > openPrice - beDist) return;
-      // Para SELL: SL esta encima del entry. Breakeven = moverlo a entry (hacia abajo)
-      double beLevel = NormalizeDouble(openPrice + bePad, digits);
+      // Para SELL: SL encima del entry. BE = moverlo a openPrice - 1pip (ganancia minima)
+      double beLevel = NormalizeDouble(openPrice - bePad, digits);
       if(currentSL != 0 && beLevel >= currentSL) { g_beApplied = true; return; }
       if(g_trade.PositionModify(ticket, beLevel, currentTP))
       {
