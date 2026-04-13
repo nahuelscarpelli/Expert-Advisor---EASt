@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.30"
+#property version   "1.40"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -84,8 +84,8 @@ int OnInit()
    g_posTicket   = 0;
    g_partialDone = false;
 
-   Print("EAVolPB v1.30 inicializado | ", _Symbol, " | ", EnumToString(Period()),
-         " | MaxSL=", InpMaxSL_Pips, "p | TP=", InpPartialTP, "p | Trail=", InpTrailingStop, "p");
+   Print("EAVolPB v1.40 inicializado | ", _Symbol, " | ", EnumToString(Period()),
+         " | MaxSL=", InpMaxSL_Pips, "p | TP=", InpPartialTP, "p | Trail=", InpTrailingStop, "p | BE=auto");
    return(INIT_SUCCEEDED);
 }
 
@@ -583,7 +583,7 @@ void ManagePartialClose()
       g_partialDone = true; // Lote muy chico para partir, activar trailing igual
 }
 
-// Trailing stop (solo se activa despues del cierre parcial)
+// Trailing stop con breakeven automatico tras cierre parcial
 void ManageTrailingStop()
 {
    if(!g_partialDone) return;
@@ -597,21 +597,27 @@ void ManageTrailingStop()
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double trailDist = PipsToPrice(InpTrailingStop);
+   // Breakeven = entry + 1 pip buffer (nunca puede perder despues del parcial)
+   double beBuffer = PipsToPrice(1);
 
    if(posType == POSITION_TYPE_BUY)
    {
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double newSL = NormalizeDouble(bid - trailDist, digits);
-      // Solo mover SL si es mejor que el actual Y estamos en ganancia
-      if(newSL > currentSL + _Point && newSL > openPrice)
+      double beLevel = NormalizeDouble(openPrice + beBuffer, digits);
+      double trailSL = NormalizeDouble(bid - trailDist, digits);
+      // Usar el mayor entre breakeven y trailing
+      double newSL = MathMax(beLevel, trailSL);
+      if(newSL > currentSL + _Point)
          g_trade.PositionModify(ticket, newSL, currentTP);
    }
    else if(posType == POSITION_TYPE_SELL)
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double newSL = NormalizeDouble(ask + trailDist, digits);
-      // Para SELL: newSL menor es mejor, y debe estar por debajo del entry
-      if((currentSL == 0 || newSL < currentSL - _Point) && newSL < openPrice)
+      double beLevel = NormalizeDouble(openPrice - beBuffer, digits);
+      double trailSL = NormalizeDouble(ask + trailDist, digits);
+      // Usar el menor entre breakeven y trailing
+      double newSL = MathMin(beLevel, trailSL);
+      if(currentSL == 0 || newSL < currentSL - _Point)
          g_trade.PositionModify(ticket, newSL, currentTP);
    }
 }
