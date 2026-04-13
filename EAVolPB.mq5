@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.50"
+#property version   "1.60"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -26,18 +26,16 @@ input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio
 input int      InpLookbackBars   = 100;     // Barras de busqueda hacia atras
 input bool     InpUseSMA200      = true;    // Usar SMA200 como filtro de tendencia
 input bool     InpUseSMA500      = false;   // Usar SMA500 como filtro de tendencia
-input bool     InpRequireMAAlign = true;    // Exigir alineacion EMA8>SMA30>SMA200
+input bool     InpRequireMAAlign = false;   // Exigir alineacion EMA8>SMA30>SMA200
 input bool     InpReqVolConfirm  = false;   // Exigir confirmacion de volumen (paso 6)
 input bool     InpDebugMode      = true;    // Imprimir por que se rechazan senales
 
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
-input double   InpPartialPct     = 50.0;    // Porcentaje cierre parcial
-input int      InpPartialTP      = 20;      // Take Profit parcial (pips)
-input int      InpBreakevenPips  = 10;      // Mover SL a BE tras +N pips (0=desactivar)
-input int      InpTrailingStop   = 30;      // Trailing Stop tras cierre parcial (pips)
+input double   InpTPRatio        = 1.5;     // TP = distancia_SL * ratio (ej: 1.5 = R:R 1:1.5)
+input int      InpBreakevenPips  = 8;       // Mover SL a BE tras +N pips (0=desactivar)
 input int      InpSL_Buffer      = 2;       // Buffer SL debajo/encima swing (pips)
-input int      InpMaxSL_Pips     = 25;      // SL maximo permitido en pips (0=sin limite)
+input int      InpMaxSL_Pips     = 20;      // SL maximo permitido en pips (0=sin limite)
 
 input group "=== General ==="
 input ulong    InpMagicNumber    = 2025;    // Numero magico
@@ -51,9 +49,8 @@ int    g_hEMA8   = INVALID_HANDLE;
 int    g_hSMA30  = INVALID_HANDLE;
 int    g_hSMA200 = INVALID_HANDLE;
 int    g_hSMA500 = INVALID_HANDLE;
-ulong  g_posTicket   = 0;
-bool   g_partialDone = false;
-bool   g_beApplied   = false;
+ulong  g_posTicket = 0;
+bool   g_beApplied = false;
 
 //+------------------------------------------------------------------+
 //| Inicializacion                                                    |
@@ -87,9 +84,9 @@ int OnInit()
    g_posTicket   = 0;
    g_partialDone = false;
 
-   Print("EAVolPB v1.50 inicializado | ", _Symbol, " | ", EnumToString(Period()),
-         " | MaxSL=", InpMaxSL_Pips, "p | TP=", InpPartialTP, "p | BE=", InpBreakevenPips,
-         "p | Trail=", InpTrailingStop, "p | MAAlign=", InpRequireMAAlign);
+   Print("EAVolPB v1.60 inicializado | ", _Symbol, " | ", EnumToString(Period()),
+         " | MaxSL=", InpMaxSL_Pips, "p | TPratio=1:", InpTPRatio,
+         " | BE=", InpBreakevenPips, "p | MAAlign=", InpRequireMAAlign);
    return(INIT_SUCCEEDED);
 }
 
@@ -111,8 +108,6 @@ void OnTick()
 {
    // Gestionar posiciones abiertas en cada tick
    ManageBreakeven();
-   ManagePartialClose();
-   ManageTrailingStop();
 
    // Solo buscar senales en nueva barra
    static datetime s_lastBar = 0;
@@ -126,9 +121,8 @@ void OnTick()
       return;
 
    // Reset de estado
-   g_posTicket   = 0;
-   g_partialDone = false;
-   g_beApplied   = false;
+   g_posTicket = 0;
+   g_beApplied = false;
 
    // Buscar senal de compra
    double sl = 0;
@@ -528,12 +522,16 @@ void ExecuteBuy(double sl)
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    ask = NormalizeDouble(ask, digits);
+   // TP proporcional: entry + slDist * ratio
+   double slDist = ask - sl;                       // distancia SL en precio
+   double tp = NormalizeDouble(ask + slDist * InpTPRatio, digits);
 
-   if(g_trade.Buy(InpLotSize, _Symbol, ask, sl, 0, "EAVolPB BUY"))
+   if(g_trade.Buy(InpLotSize, _Symbol, ask, sl, tp, "EAVolPB BUY"))
    {
-      g_posTicket   = g_trade.ResultOrder();
-      g_partialDone = false;
-      Print("COMPRA abierta | Ticket=", g_posTicket, " | Precio=", ask, " | SL=", sl);
+      g_posTicket = g_trade.ResultOrder();
+      Print("COMPRA abierta | Ticket=", g_posTicket, " | Precio=", ask,
+            " | SL=", sl, " | TP=", tp,
+            " | SLdist=", DoubleToString(slDist / PipsToPrice(1), 1), "p");
    }
    else
       Print("Error COMPRA: ", g_trade.ResultRetcode(), " - ", g_trade.ResultRetcodeDescription());
@@ -544,12 +542,17 @@ void ExecuteSell(double sl)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    bid = NormalizeDouble(bid, digits);
+   // TP proporcional: TP = entry + slDist * InpTPRatio (hacia arriba para SELL = absurdo)
+   // Para SELL: entry=bid, SL encima. TP = bid - slDist * ratio (hacia abajo)
+   double slDist = sl - bid;                       // distancia SL (positiva para sell)
+   double tp = NormalizeDouble(bid - slDist * InpTPRatio, digits);
 
-   if(g_trade.Sell(InpLotSize, _Symbol, bid, sl, 0, "EAVolPB SELL"))
+   if(g_trade.Sell(InpLotSize, _Symbol, bid, sl, tp, "EAVolPB SELL"))
    {
-      g_posTicket   = g_trade.ResultOrder();
-      g_partialDone = false;
-      Print("VENTA abierta | Ticket=", g_posTicket, " | Precio=", bid, " | SL=", sl);
+      g_posTicket = g_trade.ResultOrder();
+      Print("VENTA abierta | Ticket=", g_posTicket, " | Precio=", bid,
+            " | SL=", sl, " | TP=", tp,
+            " | SLdist=", DoubleToString(slDist / PipsToPrice(1), 1), "p");
    }
    else
       Print("Error VENTA: ", g_trade.ResultRetcode(), " - ", g_trade.ResultRetcodeDescription());
@@ -559,7 +562,7 @@ void ExecuteSell(double sl)
 //|                  GESTION DE POSICIONES                            |
 //+------------------------------------------------------------------+
 
-// Breakeven anticipado: mover SL a entry+1pip cuando se alcanza InpBreakevenPips de ganancia
+// Breakeven: mueve SL a entry+1pip en cuanto hay InpBreakevenPips de ganancia
 void ManageBreakeven()
 {
    if(g_beApplied) return;
@@ -573,15 +576,15 @@ void ManageBreakeven()
    double currentTP = PositionGetDouble(POSITION_TP);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double beDist  = PipsToPrice(InpBreakevenPips);
-   double bePad   = PipsToPrice(1);
+   double beDist = PipsToPrice(InpBreakevenPips);
+   double bePad  = PipsToPrice(1);
 
    if(posType == POSITION_TYPE_BUY)
    {
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(bid < openPrice + beDist) return;            // Aun no alcanza el umbral
+      if(bid < openPrice + beDist) return;
       double beLevel = NormalizeDouble(openPrice + bePad, digits);
-      if(beLevel <= currentSL) { g_beApplied = true; return; } // SL ya mejor
+      if(beLevel <= currentSL) { g_beApplied = true; return; }
       if(g_trade.PositionModify(ticket, beLevel, currentTP))
       {
          g_beApplied = true;
@@ -591,101 +594,15 @@ void ManageBreakeven()
    else if(posType == POSITION_TYPE_SELL)
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      if(ask > openPrice - beDist) return;             // Aun no alcanza el umbral
-      double beLevel = NormalizeDouble(openPrice - bePad, digits);
-      if(currentSL != 0 && beLevel >= currentSL) { g_beApplied = true; return; } // SL ya mejor
+      if(ask > openPrice - beDist) return;
+      // Para SELL: SL esta encima del entry. Breakeven = moverlo a entry (hacia abajo)
+      double beLevel = NormalizeDouble(openPrice + bePad, digits);
+      if(currentSL != 0 && beLevel >= currentSL) { g_beApplied = true; return; }
       if(g_trade.PositionModify(ticket, beLevel, currentTP))
       {
          g_beApplied = true;
          if(InpDebugMode) Print("BE aplicado | SELL SL -> ", beLevel);
       }
-   }
-}
-
-// Cierre parcial al alcanzar TP parcial
-void ManagePartialClose()
-{
-   if(g_partialDone) return;
-
-   ulong ticket = GetPositionTicket();
-   if(ticket == 0) return;
-
-   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-   double volume    = PositionGetDouble(POSITION_VOLUME);
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   double tpDist = PipsToPrice(InpPartialTP);
-   bool tpReached = false;
-
-   if(posType == POSITION_TYPE_BUY)
-   {
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(bid >= openPrice + tpDist) tpReached = true;
-   }
-   else
-   {
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      if(ask <= openPrice - tpDist) tpReached = true;
-   }
-
-   if(!tpReached) return;
-
-   double partialVol = NormalizeDouble(volume * InpPartialPct / 100.0, 2);
-   double minVol  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double stepVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-
-   // Ajustar al step de volumen del broker
-   partialVol = MathFloor(partialVol / stepVol) * stepVol;
-
-   if(partialVol >= minVol && (volume - partialVol) >= minVol)
-   {
-      if(g_trade.PositionClosePartial(ticket, partialVol))
-      {
-         g_partialDone = true;
-         Print("CIERRE PARCIAL | Cerrado=", partialVol, " | Restante=", volume - partialVol);
-      }
-      else
-         Print("Error cierre parcial: ", g_trade.ResultRetcode());
-   }
-   else
-      g_partialDone = true; // Lote muy chico para partir, activar trailing igual
-}
-
-// Trailing stop con breakeven automatico tras cierre parcial
-void ManageTrailingStop()
-{
-   if(!g_partialDone) return;
-
-   ulong ticket = GetPositionTicket();
-   if(ticket == 0) return;
-
-   double currentSL = PositionGetDouble(POSITION_SL);
-   double currentTP = PositionGetDouble(POSITION_TP);
-   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double trailDist = PipsToPrice(InpTrailingStop);
-   // Breakeven = entry + 1 pip buffer (nunca puede perder despues del parcial)
-   double beBuffer = PipsToPrice(1);
-
-   if(posType == POSITION_TYPE_BUY)
-   {
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double beLevel = NormalizeDouble(openPrice + beBuffer, digits);
-      double trailSL = NormalizeDouble(bid - trailDist, digits);
-      // Usar el mayor entre breakeven y trailing
-      double newSL = MathMax(beLevel, trailSL);
-      if(newSL > currentSL + _Point)
-         g_trade.PositionModify(ticket, newSL, currentTP);
-   }
-   else if(posType == POSITION_TYPE_SELL)
-   {
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double beLevel = NormalizeDouble(openPrice - beBuffer, digits);
-      double trailSL = NormalizeDouble(ask + trailDist, digits);
-      // Usar el menor entre breakeven y trailing
-      double newSL = MathMin(beLevel, trailSL);
-      if(currentSL == 0 || newSL < currentSL - _Point)
-         g_trade.PositionModify(ticket, newSL, currentTP);
    }
 }
 //+------------------------------------------------------------------+
