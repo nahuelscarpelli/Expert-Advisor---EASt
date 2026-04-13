@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.00"
+#property version   "1.10"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -21,9 +21,11 @@ input int      InpSMA500_Period  = 500;     // Periodo SMA (filtro tendencia 3)
 
 input group "=== Estrategia ==="
 input int      InpMinCandles     = 2;       // Min. velas encima/debajo de EMA (2 o 3)
-input double   InpBigBodyRatio   = 1.5;     // Ratio cuerpo grande vs promedio
-input double   InpSmallBodyRatio = 0.7;     // Ratio cuerpo pequeno vs promedio
+input double   InpBigBodyRatio   = 1.2;     // Ratio cuerpo grande vs promedio (era 1.5)
+input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio (era 0.7)
 input int      InpLookbackBars   = 100;     // Barras de busqueda hacia atras
+input bool     InpReqVolConfirm  = false;   // Exigir confirmacion de volumen (paso 6)
+input bool     InpDebugMode      = true;    // Imprimir por que se rechazan senales
 
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
@@ -218,10 +220,14 @@ bool CheckBuySignal(double &sl)
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
    //--- FILTRO RAPIDO: bar 1 (ultima cerrada) por encima de EMA8 + SMA30 + SMA200 + SMA500
-   if(rates[1].close <= ema8[1])   return false;
-   if(rates[1].close <= sma30[1])  return false;
-   if(rates[1].close <= sma200[1]) return false;
-   if(rates[1].close <= sma500[1]) return false;
+   if(rates[1].close <= ema8[1])
+   { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= EMA8=",ema8[1]); return false; }
+   if(rates[1].close <= sma30[1])
+   { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA30=",sma30[1]); return false; }
+   if(rates[1].close <= sma200[1])
+   { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA200=",sma200[1]); return false; }
+   if(rates[1].close <= sma500[1])
+   { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA500=",sma500[1]); return false; }
 
    //--- PASO 2: Encontrar pullback (velas completamente por debajo de EMA8, High < EMA8)
    int pullbackEnd = -1;
@@ -233,7 +239,8 @@ bool CheckBuySignal(double &sl)
          break;
       }
    }
-   if(pullbackEnd < 0) return false;
+   if(pullbackEnd < 0)
+   { if(InpDebugMode) Print("BUY REJECT | No se encontro pullback debajo de EMA8"); return false; }
 
    int pullbackStart = pullbackEnd;
    int pullbackCount = 0;
@@ -250,7 +257,8 @@ bool CheckBuySignal(double &sl)
       else
          break;
    }
-   if(pullbackCount < InpMinCandles) return false;
+   if(pullbackCount < InpMinCandles)
+   { if(InpDebugMode) Print("BUY REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
    //--- PASO 1: Verificar tendencia alcista antes del pullback (velas con Low > EMA8)
    int aboveCount = 0;
@@ -261,12 +269,12 @@ bool CheckBuySignal(double &sl)
       else
          break;
    }
-   if(aboveCount < InpMinCandles) return false;
+   if(aboveCount < InpMinCandles)
+   { if(InpDebugMode) Print("BUY REJECT | Tendencia insuficiente: ",aboveCount," < ",InpMinCandles); return false; }
 
    //--- PASO 3: Divergencia de volumen
    //    Vela2 (mas vieja): cuerpo GRANDE, volumen BAJO
    //    Vela1 (mas nueva):  cuerpo CHICO, volumen ALTO
-   //    Esto indica acumulacion (smart money absorbiendo oferta)
    int bodyBars = (int)MathMin(20, maxBars - pullbackEnd - 1);
    double avgBody = CalcAverageBody(rates, pullbackEnd, bodyBars);
    if(avgBody <= 0) return false;
@@ -275,11 +283,10 @@ bool CheckBuySignal(double &sl)
    double refVolume = 0;
    int vela2Bar = -1, vela1Bar = -1;
 
-   // Buscar desde la zona de breakout hacia atras hasta el pullback
    for(int i = 2; i <= pullbackStart && i < maxBars - 2; i++)
    {
-      double bodyOlder = MathAbs(rates[i + 1].close - rates[i + 1].open); // Vela2
-      double bodyNewer = MathAbs(rates[i].close     - rates[i].open);     // Vela1
+      double bodyOlder = MathAbs(rates[i + 1].close - rates[i + 1].open);
+      double bodyNewer = MathAbs(rates[i].close     - rates[i].open);
       long   volOlder  = rates[i + 1].tick_volume;
       long   volNewer  = rates[i].tick_volume;
 
@@ -294,28 +301,32 @@ bool CheckBuySignal(double &sl)
          break;
       }
    }
-   if(!volSignalFound) return false;
+   if(!volSignalFound)
+   { if(InpDebugMode) Print("BUY REJECT | No se encontro divergencia de volumen (avgBody=",avgBody,")"); return false; }
 
-   //--- PASO 6: Confirmacion de volumen entre la senal y el breakout
-   //    Debe existir una vela con volumen >= refVolume (excluyendo Vela1 y Vela2)
-   bool volConfirmed = false;
-   for(int i = 1; i <= vela2Bar; i++)
+   //--- PASO 6: Confirmacion de volumen (opcional, configurable)
+   if(InpReqVolConfirm)
    {
-      if(i == vela1Bar || i == vela2Bar) continue;
-      if((double)rates[i].tick_volume >= refVolume)
+      bool volConfirmed = false;
+      for(int i = 1; i <= vela2Bar; i++)
       {
-         volConfirmed = true;
-         break;
+         if(i == vela1Bar || i == vela2Bar) continue;
+         if((double)rates[i].tick_volume >= refVolume)
+         {
+            volConfirmed = true;
+            break;
+         }
       }
+      if(!volConfirmed)
+      { if(InpDebugMode) Print("BUY REJECT | Sin confirmacion de volumen adicional"); return false; }
    }
-   if(!volConfirmed) return false;
 
    //--- TODAS LAS CONDICIONES SE CUMPLEN - Calcular SL
    sl = NormalizeDouble(lowestLow - PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 
    Print("BUY SIGNAL | SL=", sl, " | SwingLow=", lowestLow,
-         " | Pullback=", pullbackCount, " bars | Tendencia=", aboveCount, " bars");
+         " | Pullback=", pullbackCount, "b | Tendencia=", aboveCount, "b | AvgBody=", avgBody);
    return true;
 }
 
@@ -349,10 +360,14 @@ bool CheckSellSignal(double &sl)
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
    //--- FILTRO RAPIDO: bar 1 por debajo de EMA8 + SMA30 + SMA200 + SMA500
-   if(rates[1].close >= ema8[1])   return false;
-   if(rates[1].close >= sma30[1])  return false;
-   if(rates[1].close >= sma200[1]) return false;
-   if(rates[1].close >= sma500[1]) return false;
+   if(rates[1].close >= ema8[1])
+   { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= EMA8=",ema8[1]); return false; }
+   if(rates[1].close >= sma30[1])
+   { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA30=",sma30[1]); return false; }
+   if(rates[1].close >= sma200[1])
+   { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA200=",sma200[1]); return false; }
+   if(rates[1].close >= sma500[1])
+   { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA500=",sma500[1]); return false; }
 
    //--- PASO 2: Encontrar pullback alcista (velas completamente por encima de EMA8)
    int pullbackEnd = -1;
@@ -364,7 +379,8 @@ bool CheckSellSignal(double &sl)
          break;
       }
    }
-   if(pullbackEnd < 0) return false;
+   if(pullbackEnd < 0)
+   { if(InpDebugMode) Print("SELL REJECT | No se encontro pullback encima de EMA8"); return false; }
 
    int pullbackStart = pullbackEnd;
    int pullbackCount = 0;
@@ -381,7 +397,8 @@ bool CheckSellSignal(double &sl)
       else
          break;
    }
-   if(pullbackCount < InpMinCandles) return false;
+   if(pullbackCount < InpMinCandles)
+   { if(InpDebugMode) Print("SELL REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
    //--- PASO 1: Verificar tendencia bajista antes del pullback (velas con High < EMA8)
    int belowCount = 0;
@@ -392,7 +409,8 @@ bool CheckSellSignal(double &sl)
       else
          break;
    }
-   if(belowCount < InpMinCandles) return false;
+   if(belowCount < InpMinCandles)
+   { if(InpDebugMode) Print("SELL REJECT | Tendencia bajista insuficiente: ",belowCount," < ",InpMinCandles); return false; }
 
    //--- PASO 3: Divergencia de volumen (distribucion)
    int bodyBars = (int)MathMin(20, maxBars - pullbackEnd - 1);
@@ -421,27 +439,32 @@ bool CheckSellSignal(double &sl)
          break;
       }
    }
-   if(!volSignalFound) return false;
+   if(!volSignalFound)
+   { if(InpDebugMode) Print("SELL REJECT | No se encontro divergencia de volumen (avgBody=",avgBody,")"); return false; }
 
-   //--- PASO 6: Confirmacion de volumen
-   bool volConfirmed = false;
-   for(int i = 1; i <= vela2Bar; i++)
+   //--- PASO 6: Confirmacion de volumen (opcional, configurable)
+   if(InpReqVolConfirm)
    {
-      if(i == vela1Bar || i == vela2Bar) continue;
-      if((double)rates[i].tick_volume >= refVolume)
+      bool volConfirmed = false;
+      for(int i = 1; i <= vela2Bar; i++)
       {
-         volConfirmed = true;
-         break;
+         if(i == vela1Bar || i == vela2Bar) continue;
+         if((double)rates[i].tick_volume >= refVolume)
+         {
+            volConfirmed = true;
+            break;
+         }
       }
+      if(!volConfirmed)
+      { if(InpDebugMode) Print("SELL REJECT | Sin confirmacion de volumen adicional"); return false; }
    }
-   if(!volConfirmed) return false;
 
    //--- SENAL CONFIRMADA
    sl = NormalizeDouble(highestHigh + PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 
    Print("SELL SIGNAL | SL=", sl, " | SwingHigh=", highestHigh,
-         " | Pullback=", pullbackCount, " bars | Tendencia=", belowCount, " bars");
+         " | Pullback=", pullbackCount, "b | Tendencia=", belowCount, "b | AvgBody=", avgBody);
    return true;
 }
 
