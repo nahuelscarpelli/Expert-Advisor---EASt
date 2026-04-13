@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.10"
+#property version   "1.60"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -21,18 +21,21 @@ input int      InpSMA500_Period  = 500;     // Periodo SMA (filtro tendencia 3)
 
 input group "=== Estrategia ==="
 input int      InpMinCandles     = 2;       // Min. velas encima/debajo de EMA (2 o 3)
-input double   InpBigBodyRatio   = 1.2;     // Ratio cuerpo grande vs promedio (era 1.5)
-input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio (era 0.7)
+input double   InpBigBodyRatio   = 1.2;     // Ratio cuerpo grande vs promedio
+input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio
 input int      InpLookbackBars   = 100;     // Barras de busqueda hacia atras
+input bool     InpUseSMA200      = true;    // Usar SMA200 como filtro de tendencia
+input bool     InpUseSMA500      = false;   // Usar SMA500 como filtro de tendencia
+input bool     InpRequireMAAlign = false;   // Exigir alineacion EMA8>SMA30>SMA200
 input bool     InpReqVolConfirm  = false;   // Exigir confirmacion de volumen (paso 6)
 input bool     InpDebugMode      = true;    // Imprimir por que se rechazan senales
 
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
-input double   InpPartialPct     = 50.0;    // Porcentaje cierre parcial
-input int      InpPartialTP      = 15;      // Take Profit parcial (pips)
-input int      InpTrailingStop   = 15;      // Trailing Stop (pips)
+input double   InpTPRatio        = 1.5;     // TP = distancia_SL * ratio (ej: 1.5 = R:R 1:1.5)
+input int      InpBreakevenPips  = 8;       // Mover SL a BE tras +N pips (0=desactivar)
 input int      InpSL_Buffer      = 2;       // Buffer SL debajo/encima swing (pips)
+input int      InpMaxSL_Pips     = 20;      // SL maximo permitido en pips (0=sin limite)
 
 input group "=== General ==="
 input ulong    InpMagicNumber    = 2025;    // Numero magico
@@ -46,8 +49,8 @@ int    g_hEMA8   = INVALID_HANDLE;
 int    g_hSMA30  = INVALID_HANDLE;
 int    g_hSMA200 = INVALID_HANDLE;
 int    g_hSMA500 = INVALID_HANDLE;
-ulong  g_posTicket   = 0;
-bool   g_partialDone = false;
+ulong  g_posTicket = 0;
+bool   g_beApplied = false;
 
 //+------------------------------------------------------------------+
 //| Inicializacion                                                    |
@@ -81,7 +84,9 @@ int OnInit()
    g_posTicket   = 0;
    g_partialDone = false;
 
-   Print("EAVolPB v1.00 inicializado | ", _Symbol, " | ", EnumToString(Period()));
+   Print("EAVolPB v1.60 inicializado | ", _Symbol, " | ", EnumToString(Period()),
+         " | MaxSL=", InpMaxSL_Pips, "p | TPratio=1:", InpTPRatio,
+         " | BE=", InpBreakevenPips, "p | MAAlign=", InpRequireMAAlign);
    return(INIT_SUCCEEDED);
 }
 
@@ -102,8 +107,7 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    // Gestionar posiciones abiertas en cada tick
-   ManagePartialClose();
-   ManageTrailingStop();
+   ManageBreakeven();
 
    // Solo buscar senales en nueva barra
    static datetime s_lastBar = 0;
@@ -117,8 +121,8 @@ void OnTick()
       return;
 
    // Reset de estado
-   g_posTicket   = 0;
-   g_partialDone = false;
+   g_posTicket = 0;
+   g_beApplied = false;
 
    // Buscar senal de compra
    double sl = 0;
@@ -219,21 +223,30 @@ bool CheckBuySignal(double &sl)
    if(CopyBuffer(g_hSMA500, 0, 0, maxBars, sma500) < maxBars) return false;
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
-   //--- FILTRO RAPIDO: bar 1 (ultima cerrada) por encima de EMA8 + SMA30 + SMA200 + SMA500
+   //--- FILTRO RAPIDO: bar 1 (ultima cerrada) por encima de EMA8 + SMA30 [+ SMA200 + SMA500 opcionales]
    if(rates[1].close <= ema8[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= EMA8=",ema8[1]); return false; }
    if(rates[1].close <= sma30[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA30=",sma30[1]); return false; }
-   if(rates[1].close <= sma200[1])
+   if(InpUseSMA200 && rates[1].close <= sma200[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA200=",sma200[1]); return false; }
-   if(rates[1].close <= sma500[1])
+   if(InpUseSMA500 && rates[1].close <= sma500[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA500=",sma500[1]); return false; }
 
-   //--- PASO 2: Encontrar pullback (velas completamente por debajo de EMA8, High < EMA8)
+   //--- FILTRO ALINEACION MA: EMA8 > SMA30 [> SMA200]
+   if(InpRequireMAAlign)
+   {
+      if(ema8[1] <= sma30[1])
+      { if(InpDebugMode) Print("BUY REJECT | Sin alineacion MA: EMA8=",ema8[1]," <= SMA30=",sma30[1]); return false; }
+      if(InpUseSMA200 && sma30[1] <= sma200[1])
+      { if(InpDebugMode) Print("BUY REJECT | Sin alineacion MA: SMA30=",sma30[1]," <= SMA200=",sma200[1]); return false; }
+   }
+
+   //--- PASO 2: Encontrar pullback (cierres por debajo de EMA8)
    int pullbackEnd = -1;
    for(int i = 2; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
       {
          pullbackEnd = i;
          break;
@@ -248,7 +261,7 @@ bool CheckBuySignal(double &sl)
 
    for(int i = pullbackEnd; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
       {
          pullbackCount++;
          if(rates[i].low < lowestLow) lowestLow = rates[i].low;
@@ -260,11 +273,11 @@ bool CheckBuySignal(double &sl)
    if(pullbackCount < InpMinCandles)
    { if(InpDebugMode) Print("BUY REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
-   //--- PASO 1: Verificar tendencia alcista antes del pullback (velas con Low > EMA8)
+   //--- PASO 1: Verificar tendencia alcista antes del pullback (cierres por encima de EMA8)
    int aboveCount = 0;
    for(int i = pullbackStart + 1; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
          aboveCount++;
       else
          break;
@@ -325,6 +338,18 @@ bool CheckBuySignal(double &sl)
    sl = NormalizeDouble(lowestLow - PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 
+   //--- Verificar distancia maxima del SL
+   if(InpMaxSL_Pips > 0)
+   {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double slDist = (ask - sl) / PipsToPrice(1);
+      if(slDist > InpMaxSL_Pips)
+      {
+         if(InpDebugMode) Print("BUY REJECT | SL demasiado lejano: ",DoubleToString(slDist,1)," pips > max ",InpMaxSL_Pips);
+         return false;
+      }
+   }
+
    Print("BUY SIGNAL | SL=", sl, " | SwingLow=", lowestLow,
          " | Pullback=", pullbackCount, "b | Tendencia=", aboveCount, "b | AvgBody=", avgBody);
    return true;
@@ -359,21 +384,30 @@ bool CheckSellSignal(double &sl)
    if(CopyBuffer(g_hSMA500, 0, 0, maxBars, sma500) < maxBars) return false;
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
-   //--- FILTRO RAPIDO: bar 1 por debajo de EMA8 + SMA30 + SMA200 + SMA500
+   //--- FILTRO RAPIDO: bar 1 por debajo de EMA8 + SMA30 [+ SMA200 + SMA500 opcionales]
    if(rates[1].close >= ema8[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= EMA8=",ema8[1]); return false; }
    if(rates[1].close >= sma30[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA30=",sma30[1]); return false; }
-   if(rates[1].close >= sma200[1])
+   if(InpUseSMA200 && rates[1].close >= sma200[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA200=",sma200[1]); return false; }
-   if(rates[1].close >= sma500[1])
+   if(InpUseSMA500 && rates[1].close >= sma500[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA500=",sma500[1]); return false; }
 
-   //--- PASO 2: Encontrar pullback alcista (velas completamente por encima de EMA8)
+   //--- FILTRO ALINEACION MA: EMA8 < SMA30 [< SMA200]
+   if(InpRequireMAAlign)
+   {
+      if(ema8[1] >= sma30[1])
+      { if(InpDebugMode) Print("SELL REJECT | Sin alineacion MA: EMA8=",ema8[1]," >= SMA30=",sma30[1]); return false; }
+      if(InpUseSMA200 && sma30[1] >= sma200[1])
+      { if(InpDebugMode) Print("SELL REJECT | Sin alineacion MA: SMA30=",sma30[1]," >= SMA200=",sma200[1]); return false; }
+   }
+
+   //--- PASO 2: Encontrar pullback alcista (cierres por encima de EMA8)
    int pullbackEnd = -1;
    for(int i = 2; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
       {
          pullbackEnd = i;
          break;
@@ -388,7 +422,7 @@ bool CheckSellSignal(double &sl)
 
    for(int i = pullbackEnd; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
       {
          pullbackCount++;
          if(rates[i].high > highestHigh) highestHigh = rates[i].high;
@@ -400,11 +434,11 @@ bool CheckSellSignal(double &sl)
    if(pullbackCount < InpMinCandles)
    { if(InpDebugMode) Print("SELL REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
-   //--- PASO 1: Verificar tendencia bajista antes del pullback (velas con High < EMA8)
+   //--- PASO 1: Verificar tendencia bajista antes del pullback (cierres por debajo de EMA8)
    int belowCount = 0;
    for(int i = pullbackStart + 1; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
          belowCount++;
       else
          break;
@@ -463,6 +497,18 @@ bool CheckSellSignal(double &sl)
    sl = NormalizeDouble(highestHigh + PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 
+   //--- Verificar distancia maxima del SL
+   if(InpMaxSL_Pips > 0)
+   {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double slDist = (sl - bid) / PipsToPrice(1);
+      if(slDist > InpMaxSL_Pips)
+      {
+         if(InpDebugMode) Print("SELL REJECT | SL demasiado lejano: ",DoubleToString(slDist,1)," pips > max ",InpMaxSL_Pips);
+         return false;
+      }
+   }
+
    Print("SELL SIGNAL | SL=", sl, " | SwingHigh=", highestHigh,
          " | Pullback=", pullbackCount, "b | Tendencia=", belowCount, "b | AvgBody=", avgBody);
    return true;
@@ -476,12 +522,16 @@ void ExecuteBuy(double sl)
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    ask = NormalizeDouble(ask, digits);
+   // TP proporcional: entry + slDist * ratio
+   double slDist = ask - sl;                       // distancia SL en precio
+   double tp = NormalizeDouble(ask + slDist * InpTPRatio, digits);
 
-   if(g_trade.Buy(InpLotSize, _Symbol, ask, sl, 0, "EAVolPB BUY"))
+   if(g_trade.Buy(InpLotSize, _Symbol, ask, sl, tp, "EAVolPB BUY"))
    {
-      g_posTicket   = g_trade.ResultOrder();
-      g_partialDone = false;
-      Print("COMPRA abierta | Ticket=", g_posTicket, " | Precio=", ask, " | SL=", sl);
+      g_posTicket = g_trade.ResultOrder();
+      Print("COMPRA abierta | Ticket=", g_posTicket, " | Precio=", ask,
+            " | SL=", sl, " | TP=", tp,
+            " | SLdist=", DoubleToString(slDist / PipsToPrice(1), 1), "p");
    }
    else
       Print("Error COMPRA: ", g_trade.ResultRetcode(), " - ", g_trade.ResultRetcodeDescription());
@@ -492,12 +542,17 @@ void ExecuteSell(double sl)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    bid = NormalizeDouble(bid, digits);
+   // TP proporcional: TP = entry + slDist * InpTPRatio (hacia arriba para SELL = absurdo)
+   // Para SELL: entry=bid, SL encima. TP = bid - slDist * ratio (hacia abajo)
+   double slDist = sl - bid;                       // distancia SL (positiva para sell)
+   double tp = NormalizeDouble(bid - slDist * InpTPRatio, digits);
 
-   if(g_trade.Sell(InpLotSize, _Symbol, bid, sl, 0, "EAVolPB SELL"))
+   if(g_trade.Sell(InpLotSize, _Symbol, bid, sl, tp, "EAVolPB SELL"))
    {
-      g_posTicket   = g_trade.ResultOrder();
-      g_partialDone = false;
-      Print("VENTA abierta | Ticket=", g_posTicket, " | Precio=", bid, " | SL=", sl);
+      g_posTicket = g_trade.ResultOrder();
+      Print("VENTA abierta | Ticket=", g_posTicket, " | Precio=", bid,
+            " | SL=", sl, " | TP=", tp,
+            " | SLdist=", DoubleToString(slDist / PipsToPrice(1), 1), "p");
    }
    else
       Print("Error VENTA: ", g_trade.ResultRetcode(), " - ", g_trade.ResultRetcodeDescription());
@@ -507,84 +562,47 @@ void ExecuteSell(double sl)
 //|                  GESTION DE POSICIONES                            |
 //+------------------------------------------------------------------+
 
-// Cierre parcial al alcanzar TP parcial
-void ManagePartialClose()
+// Breakeven: mueve SL a entry+1pip en cuanto hay InpBreakevenPips de ganancia
+void ManageBreakeven()
 {
-   if(g_partialDone) return;
+   if(g_beApplied) return;
+   if(InpBreakevenPips <= 0) return;
 
    ulong ticket = GetPositionTicket();
    if(ticket == 0) return;
 
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-   double volume    = PositionGetDouble(POSITION_VOLUME);
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   double tpDist = PipsToPrice(InpPartialTP);
-   bool tpReached = false;
-
-   if(posType == POSITION_TYPE_BUY)
-   {
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(bid >= openPrice + tpDist) tpReached = true;
-   }
-   else
-   {
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      if(ask <= openPrice - tpDist) tpReached = true;
-   }
-
-   if(!tpReached) return;
-
-   double partialVol = NormalizeDouble(volume * InpPartialPct / 100.0, 2);
-   double minVol  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double stepVol = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-
-   // Ajustar al step de volumen del broker
-   partialVol = MathFloor(partialVol / stepVol) * stepVol;
-
-   if(partialVol >= minVol && (volume - partialVol) >= minVol)
-   {
-      if(g_trade.PositionClosePartial(ticket, partialVol))
-      {
-         g_partialDone = true;
-         Print("CIERRE PARCIAL | Cerrado=", partialVol, " | Restante=", volume - partialVol);
-      }
-      else
-         Print("Error cierre parcial: ", g_trade.ResultRetcode());
-   }
-   else
-      g_partialDone = true; // Lote muy chico para partir, activar trailing igual
-}
-
-// Trailing stop (solo se activa despues del cierre parcial)
-void ManageTrailingStop()
-{
-   if(!g_partialDone) return;
-
-   ulong ticket = GetPositionTicket();
-   if(ticket == 0) return;
-
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
-   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double trailDist = PipsToPrice(InpTrailingStop);
+   double beDist = PipsToPrice(InpBreakevenPips);
+   double bePad  = PipsToPrice(1);
 
    if(posType == POSITION_TYPE_BUY)
    {
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double newSL = NormalizeDouble(bid - trailDist, digits);
-      // Solo mover SL si es mejor que el actual Y estamos en ganancia
-      if(newSL > currentSL + _Point && newSL > openPrice)
-         g_trade.PositionModify(ticket, newSL, currentTP);
+      if(bid < openPrice + beDist) return;
+      double beLevel = NormalizeDouble(openPrice + bePad, digits);
+      if(beLevel <= currentSL) { g_beApplied = true; return; }
+      if(g_trade.PositionModify(ticket, beLevel, currentTP))
+      {
+         g_beApplied = true;
+         if(InpDebugMode) Print("BE aplicado | BUY SL -> ", beLevel);
+      }
    }
    else if(posType == POSITION_TYPE_SELL)
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double newSL = NormalizeDouble(ask + trailDist, digits);
-      // Para SELL: newSL menor es mejor, y debe estar por debajo del entry
-      if((currentSL == 0 || newSL < currentSL - _Point) && newSL < openPrice)
-         g_trade.PositionModify(ticket, newSL, currentTP);
+      if(ask > openPrice - beDist) return;
+      // Para SELL: SL esta encima del entry. Breakeven = moverlo a entry (hacia abajo)
+      double beLevel = NormalizeDouble(openPrice + bePad, digits);
+      if(currentSL != 0 && beLevel >= currentSL) { g_beApplied = true; return; }
+      if(g_trade.PositionModify(ticket, beLevel, currentTP))
+      {
+         g_beApplied = true;
+         if(InpDebugMode) Print("BE aplicado | SELL SL -> ", beLevel);
+      }
    }
 }
 //+------------------------------------------------------------------+
