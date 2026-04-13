@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.80"
+#property version   "1.90"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -32,17 +32,17 @@ input bool     InpDebugMode      = false;   // Imprimir por que se rechazan sena
 
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
-input double   InpTPRatio        = 1.5;     // TP = SL_dist * ratio  [optimizar: 1.0-2.5]
-input int      InpBreakevenPips  = 8;       // Mover SL a BE tras +N pips [optimizar: 0-15]
+input double   InpTPRatio        = 1.6;     // TP = SL_dist * ratio (opt: PF=3.34 con 1.6)
+input int      InpBreakevenPips  = 14;      // Mover SL a BE tras +N pips (opt: 14)
 input int      InpSL_Buffer      = 2;       // Buffer SL debajo/encima swing (pips)
-input int      InpMaxSL_Pips     = 20;      // SL maximo en pips  [optimizar: 10-30]
+input int      InpMaxSL_Pips     = 30;      // SL maximo en pips (opt: 30)
 
 input group "=== Filtros de Sesion ==="
 input bool     InpTradeBuys      = true;    // Operar senales de COMPRA
 input bool     InpTradeSells     = true;    // Operar senales de VENTA
-input bool     InpFilterHours    = true;    // Activar filtro de horario (Test 2 ganador)
-input int      InpStartHour      = 8;       // Hora inicio (servidor) [optimizar: 7-10]
-input int      InpEndHour        = 18;      // Hora fin (servidor)   [optimizar: 16-21]
+input bool     InpFilterHours    = true;    // Activar filtro de horario
+input int      InpStartHour      = 8;       // Hora inicio servidor (opt: 8)
+input int      InpEndHour        = 16;      // Hora fin servidor (opt: 16, cierre europeo)
 
 input group "=== General ==="
 input ulong    InpMagicNumber    = 2025;    // Numero magico
@@ -91,7 +91,7 @@ int OnInit()
    g_posTicket = 0;
    g_beApplied = false;
 
-   Print("EAVolPB v1.80 | ", _Symbol, " | ", EnumToString(Period()),
+   Print("EAVolPB v1.90 | ", _Symbol, " | ", EnumToString(Period()),
          " | MaxSL=", InpMaxSL_Pips, "p | TP=1:", InpTPRatio,
          " | BE=", InpBreakevenPips, "p",
          " | Buys=", InpTradeBuys, " Sells=", InpTradeSells,
