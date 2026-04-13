@@ -137,7 +137,8 @@ void OnTick()
    // Filtro de horario
    if(InpFilterHours)
    {
-      int hour = TimeHour(TimeCurrent());
+      MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+      int hour = dt.hour;
       if(hour < InpStartHour || hour >= InpEndHour)
          return;
    }
