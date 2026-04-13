@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.20"
+#property version   "1.30"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -32,9 +32,10 @@ input bool     InpDebugMode      = true;    // Imprimir por que se rechazan sena
 input group "=== Gestion de Riesgo ==="
 input double   InpLotSize        = 0.1;     // Tamano de lote
 input double   InpPartialPct     = 50.0;    // Porcentaje cierre parcial
-input int      InpPartialTP      = 15;      // Take Profit parcial (pips)
-input int      InpTrailingStop   = 15;      // Trailing Stop (pips)
+input int      InpPartialTP      = 20;      // Take Profit parcial (pips)
+input int      InpTrailingStop   = 20;      // Trailing Stop (pips)
 input int      InpSL_Buffer      = 2;       // Buffer SL debajo/encima swing (pips)
+input int      InpMaxSL_Pips     = 25;      // SL maximo permitido en pips (0=sin limite)
 
 input group "=== General ==="
 input ulong    InpMagicNumber    = 2025;    // Numero magico
@@ -83,7 +84,8 @@ int OnInit()
    g_posTicket   = 0;
    g_partialDone = false;
 
-   Print("EAVolPB v1.20 inicializado | ", _Symbol, " | ", EnumToString(Period()));
+   Print("EAVolPB v1.30 inicializado | ", _Symbol, " | ", EnumToString(Period()),
+         " | MaxSL=", InpMaxSL_Pips, "p | TP=", InpPartialTP, "p | Trail=", InpTrailingStop, "p");
    return(INIT_SUCCEEDED);
 }
 
@@ -327,6 +329,18 @@ bool CheckBuySignal(double &sl)
    sl = NormalizeDouble(lowestLow - PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 
+   //--- Verificar distancia maxima del SL
+   if(InpMaxSL_Pips > 0)
+   {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double slDist = (ask - sl) / PipsToPrice(1);
+      if(slDist > InpMaxSL_Pips)
+      {
+         if(InpDebugMode) Print("BUY REJECT | SL demasiado lejano: ",DoubleToString(slDist,1)," pips > max ",InpMaxSL_Pips);
+         return false;
+      }
+   }
+
    Print("BUY SIGNAL | SL=", sl, " | SwingLow=", lowestLow,
          " | Pullback=", pullbackCount, "b | Tendencia=", aboveCount, "b | AvgBody=", avgBody);
    return true;
@@ -464,6 +478,18 @@ bool CheckSellSignal(double &sl)
    //--- SENAL CONFIRMADA
    sl = NormalizeDouble(highestHigh + PipsToPrice(InpSL_Buffer),
                         (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+
+   //--- Verificar distancia maxima del SL
+   if(InpMaxSL_Pips > 0)
+   {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double slDist = (sl - bid) / PipsToPrice(1);
+      if(slDist > InpMaxSL_Pips)
+      {
+         if(InpDebugMode) Print("SELL REJECT | SL demasiado lejano: ",DoubleToString(slDist,1)," pips > max ",InpMaxSL_Pips);
+         return false;
+      }
+   }
 
    Print("SELL SIGNAL | SL=", sl, " | SwingHigh=", highestHigh,
          " | Pullback=", pullbackCount, "b | Tendencia=", belowCount, "b | AvgBody=", avgBody);
