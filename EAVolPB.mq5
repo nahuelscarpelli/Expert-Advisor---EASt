@@ -4,7 +4,7 @@
 //|            Expert Advisor - Volume Pullback Strategy (MT5)         |
 //+------------------------------------------------------------------+
 #property copyright "Nahuel H. Scarpelli"
-#property version   "1.10"
+#property version   "1.20"
 #property description "EA basado en pullback con confirmacion de volumen."
 #property description "Usa EMA8, SMA30, SMA200, SMA500 y analisis de volumen/precio."
 
@@ -21,9 +21,11 @@ input int      InpSMA500_Period  = 500;     // Periodo SMA (filtro tendencia 3)
 
 input group "=== Estrategia ==="
 input int      InpMinCandles     = 2;       // Min. velas encima/debajo de EMA (2 o 3)
-input double   InpBigBodyRatio   = 1.2;     // Ratio cuerpo grande vs promedio (era 1.5)
-input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio (era 0.7)
+input double   InpBigBodyRatio   = 1.2;     // Ratio cuerpo grande vs promedio
+input double   InpSmallBodyRatio = 0.85;    // Ratio cuerpo pequeno vs promedio
 input int      InpLookbackBars   = 100;     // Barras de busqueda hacia atras
+input bool     InpUseSMA200      = true;    // Usar SMA200 como filtro de tendencia
+input bool     InpUseSMA500      = false;   // Usar SMA500 como filtro de tendencia
 input bool     InpReqVolConfirm  = false;   // Exigir confirmacion de volumen (paso 6)
 input bool     InpDebugMode      = true;    // Imprimir por que se rechazan senales
 
@@ -81,7 +83,7 @@ int OnInit()
    g_posTicket   = 0;
    g_partialDone = false;
 
-   Print("EAVolPB v1.00 inicializado | ", _Symbol, " | ", EnumToString(Period()));
+   Print("EAVolPB v1.20 inicializado | ", _Symbol, " | ", EnumToString(Period()));
    return(INIT_SUCCEEDED);
 }
 
@@ -219,21 +221,21 @@ bool CheckBuySignal(double &sl)
    if(CopyBuffer(g_hSMA500, 0, 0, maxBars, sma500) < maxBars) return false;
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
-   //--- FILTRO RAPIDO: bar 1 (ultima cerrada) por encima de EMA8 + SMA30 + SMA200 + SMA500
+   //--- FILTRO RAPIDO: bar 1 (ultima cerrada) por encima de EMA8 + SMA30 [+ SMA200 + SMA500 opcionales]
    if(rates[1].close <= ema8[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= EMA8=",ema8[1]); return false; }
    if(rates[1].close <= sma30[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA30=",sma30[1]); return false; }
-   if(rates[1].close <= sma200[1])
+   if(InpUseSMA200 && rates[1].close <= sma200[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA200=",sma200[1]); return false; }
-   if(rates[1].close <= sma500[1])
+   if(InpUseSMA500 && rates[1].close <= sma500[1])
    { if(InpDebugMode) Print("BUY REJECT | Bar1 close=",rates[1].close," <= SMA500=",sma500[1]); return false; }
 
-   //--- PASO 2: Encontrar pullback (velas completamente por debajo de EMA8, High < EMA8)
+   //--- PASO 2: Encontrar pullback (cierres por debajo de EMA8)
    int pullbackEnd = -1;
    for(int i = 2; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
       {
          pullbackEnd = i;
          break;
@@ -248,7 +250,7 @@ bool CheckBuySignal(double &sl)
 
    for(int i = pullbackEnd; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
       {
          pullbackCount++;
          if(rates[i].low < lowestLow) lowestLow = rates[i].low;
@@ -260,11 +262,11 @@ bool CheckBuySignal(double &sl)
    if(pullbackCount < InpMinCandles)
    { if(InpDebugMode) Print("BUY REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
-   //--- PASO 1: Verificar tendencia alcista antes del pullback (velas con Low > EMA8)
+   //--- PASO 1: Verificar tendencia alcista antes del pullback (cierres por encima de EMA8)
    int aboveCount = 0;
    for(int i = pullbackStart + 1; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
          aboveCount++;
       else
          break;
@@ -359,21 +361,21 @@ bool CheckSellSignal(double &sl)
    if(CopyBuffer(g_hSMA500, 0, 0, maxBars, sma500) < maxBars) return false;
    if(CopyRates(_Symbol, PERIOD_CURRENT, 0, maxBars, rates)   < maxBars) return false;
 
-   //--- FILTRO RAPIDO: bar 1 por debajo de EMA8 + SMA30 + SMA200 + SMA500
+   //--- FILTRO RAPIDO: bar 1 por debajo de EMA8 + SMA30 [+ SMA200 + SMA500 opcionales]
    if(rates[1].close >= ema8[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= EMA8=",ema8[1]); return false; }
    if(rates[1].close >= sma30[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA30=",sma30[1]); return false; }
-   if(rates[1].close >= sma200[1])
+   if(InpUseSMA200 && rates[1].close >= sma200[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA200=",sma200[1]); return false; }
-   if(rates[1].close >= sma500[1])
+   if(InpUseSMA500 && rates[1].close >= sma500[1])
    { if(InpDebugMode) Print("SELL REJECT | Bar1 close=",rates[1].close," >= SMA500=",sma500[1]); return false; }
 
-   //--- PASO 2: Encontrar pullback alcista (velas completamente por encima de EMA8)
+   //--- PASO 2: Encontrar pullback alcista (cierres por encima de EMA8)
    int pullbackEnd = -1;
    for(int i = 2; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
       {
          pullbackEnd = i;
          break;
@@ -388,7 +390,7 @@ bool CheckSellSignal(double &sl)
 
    for(int i = pullbackEnd; i < maxBars - 1; i++)
    {
-      if(rates[i].low > ema8[i])
+      if(rates[i].close > ema8[i])
       {
          pullbackCount++;
          if(rates[i].high > highestHigh) highestHigh = rates[i].high;
@@ -400,11 +402,11 @@ bool CheckSellSignal(double &sl)
    if(pullbackCount < InpMinCandles)
    { if(InpDebugMode) Print("SELL REJECT | Pullback insuficiente: ",pullbackCount," < ",InpMinCandles); return false; }
 
-   //--- PASO 1: Verificar tendencia bajista antes del pullback (velas con High < EMA8)
+   //--- PASO 1: Verificar tendencia bajista antes del pullback (cierres por debajo de EMA8)
    int belowCount = 0;
    for(int i = pullbackStart + 1; i < maxBars - 1; i++)
    {
-      if(rates[i].high < ema8[i])
+      if(rates[i].close < ema8[i])
          belowCount++;
       else
          break;
