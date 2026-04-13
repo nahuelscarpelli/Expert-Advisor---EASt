@@ -81,8 +81,8 @@ int OnInit()
    else
       g_trade.SetTypeFilling(ORDER_FILLING_RETURN);
 
-   g_posTicket   = 0;
-   g_partialDone = false;
+   g_posTicket = 0;
+   g_beApplied = false;
 
    Print("EAVolPB v1.60 inicializado | ", _Symbol, " | ", EnumToString(Period()),
          " | MaxSL=", InpMaxSL_Pips, "p | TPratio=1:", InpTPRatio,
